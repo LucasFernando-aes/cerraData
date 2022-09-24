@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 
 #i'll try to use this if we have time. 
-#that's not fully implemented now in this code so that's why i set dali_is_enabled False im both cases
+#that's not fully implemented now in this code so that's why i set dali_is_enabled False in both cases
 try:
     from nvidia.dali.plugin.pytorch import DALIClassificationIterator, LastBatchPolicy
     from nvidia.dali.pipeline import pipeline_def
@@ -169,24 +169,30 @@ def get_loaders(run, args):
         normalize
     ]
 
+    #feature extraction fix
+    train_transform = train_transform if not (args.evaluate and args.get_features) else val_transform
     #train split
     train_dataset = Subset(dataset, train_idx, transform=transforms.Compose(train_transform))
-    train_loader  = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
+    train_loader  = torch.utils.data.DataLoader(train_dataset, 
+												batch_size=args.batch_size, 
+												shuffle=False, 
+												num_workers=args.workers,
+												pin_memory=True)
 
     #val split
     val_dataset = Subset(dataset, val_idx, transform=transforms.Compose(val_transform))
-    val_loader  = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size*8, shuffle=False, num_workers=args.workers, pin_memory=True)
+    val_loader  = torch.utils.data.DataLoader(val_dataset, 
+											  batch_size=args.batch_size*8, 
+											  shuffle=False, 
+											  num_workers=args.workers, 
+											  pin_memory=True)
 
     #test split
     test_dataset = Subset(dataset, test_idx, transform=transforms.Compose(val_transform))
-    test_loader  = torch.utils.data.DataLoader(test_dataset, batch_size=args.batch_size*4, shuffle=False, num_workers=args.workers, pin_memory=True)
-
-#    images = [train_dataset[0][0], val_dataset[0][0], test_dataset[0][0]]
-#    for i, img in enumerate(images):
-#        np_img = np.asarray(img)
-#        plt.figure()
-#        plt.imshow(np_img)
-#        plt.savefig(f"sanity_check{run}{i}.png")
-#        plt.close()
+    test_loader  = torch.utils.data.DataLoader(test_dataset, 
+											   batch_size=args.batch_size*4, 
+											   shuffle=False, 
+											   num_workers=args.workers, 
+											   pin_memory=True)
 
     return train_loader, val_loader, test_loader

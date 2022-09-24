@@ -35,7 +35,7 @@ accepted_metrics = ['loss', 'f1-score', 'accuracy', 'b-accuracy']
 
 parser = argparse.ArgumentParser(description='PyTorch Cerrado/Dataset assessment')
 parser.add_argument('--root', '-r', metavar='PATH', default='./data',
-                    type=PathType(exists=True, type='dir'),
+					type=str, #PathType(exists=True, type=lambda x: x == 'dir' or x == 'symlink'),
                     help='root of data directory')
 parser.add_argument('--arch', '-a', metavar='ARCH', default='resnet18',
                     choices=model_names,
@@ -45,7 +45,7 @@ parser.add_argument('--ts', '--training-split', default=0.8, type=float,
                     metavar='TS', help='fraction of data to reserve for training (default: 0.8)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
-parser.add_argument('--runs', default=1, type=int, metavar='N',
+parser.add_argument('--runs', default=5, type=int, metavar='N',
                     help='number of repetitions of the experiment (default: 5)')
 parser.add_argument('--epochs', default=100, type=int, metavar='N',
                     help='number of total epochs to run (default: 200)')
@@ -88,10 +88,11 @@ parser.add_argument('--gpu', type=int, default=0,
 parser.add_argument('--save-every', dest='save_every', metavar='N',
                     help='Save checkpoints at every specified number of epochs (default: 25)',
                     type=int, default=25)
-parser.add_argument('--exp-name', dest='exp_name', default='', type=str,
+parser.add_argument('--exp-name', dest='exp_name', default='baseline', type=str,
                     help='Suffix to be added at the end of the logdir')
 parser.add_argument('--channels-last', type=bool, default=False)
-
+parser.add_argument('--get-features', dest='get_features', action='store_true',
+					help='save features from best model. Only applyable if --evaluate if active.')
 num_classes = 5
 
 def main():
@@ -127,7 +128,7 @@ def main():
         test_metrics = main_worker(run, train_loader, val_loader, test_loader, args)
         for key in test_metrics.keys(): test_averages[key][run] = test_metrics[key]
 
-    print(' * Best Tesst average metrics -> ')
+    print(' * Best Test average metrics -> ')
     print('\t' + ' '.join([f'{key}:{np.mean(test_averages[key]):.3f}/{np.std(test_averages[key]):.3f}' for key in test_averages.keys()]))
     
 
@@ -176,7 +177,7 @@ def main_worker(run, train_loader, val_loader, test_loader, args):
         else:
             backbone = models.__dict__[args.arch]()
 
-    model = Model(backbone, num_classes)
+    model = Model(backbone, num_classes, get_features=(args.evaluate and args.get_features))
     print(model)
 
     if hasattr(torch, 'channels_last') and  hasattr(torch, 'contiguous_format'):
@@ -212,7 +213,7 @@ def main_worker(run, train_loader, val_loader, test_loader, args):
         if os.path.isfile(filename):
             print("=> loading checkpoint '{}'".format(filename))
 
-            if not args.gpu is None:
+            if args.gpu is not None:
                 checkpoint = torch.load(filename)
             else:
                 checkpoint = torch.load(filename, map_location=args.device)
@@ -221,7 +222,7 @@ def main_worker(run, train_loader, val_loader, test_loader, args):
             best_followed = checkpoint['best_prec1']
             model.load_state_dict(checkpoint['state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            if not args.lr_steps is None:
+            if args.lr_steps is not None:
                 lr_scheduler.load_state_dict(checkpoint['scheduler'])
 
             print("=> loaded checkpoint '{}' (epoch {})"
@@ -230,7 +231,26 @@ def main_worker(run, train_loader, val_loader, test_loader, args):
             print("=> no checkpoint found at '{}'".format(filename))
 
     if args.evaluate:
-        metrics = validate(test_loader, model, criterion, args)
+        if args.get_features:
+            print("generating features of training set")
+            train_features = validate(train_loader, model, criterion, args, supress_out=True, get_features=True)['features']
+            model.reset_features()
+
+            print("generating features of validation set")
+            val_features   = validate(val_loader,   model, criterion, args, supress_out=True, get_features=True)['features']
+            model.reset_features()
+
+            print("validating and generating features of test set")
+            metrics        = validate(test_loader, model, criterion, args, is_test=True, get_features=True)
+            test_features  = metrics['features']
+
+            np.savez(os.path.join(run_dir, 'features'),
+                        train=train_features,
+                        val=val_features,
+                        test=test_features)
+        else:
+            metrics = validate(test_loader, model, criterion, args, is_test=True)
+
         return metrics
 
     counter = 0
@@ -377,7 +397,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     bacc = balanced_accuracy_score(y_true, y_pred)*100.0
     return {'loss': losses.avg, 'accuracy': top1.avg, 'f1-score': f1, 'b-accuracy': bacc}
 
-def validate(val_loader, model, criterion, args, is_test=False):
+def validate(val_loader, model, criterion, args, is_test=False, supress_out=False, get_features=False):
     """
     Run evaluation
     """
@@ -410,7 +430,7 @@ def validate(val_loader, model, criterion, args, is_test=False):
                 if not args.gpu is None and torch.cuda.is_available():
                     target = data[1].cuda(args.gpu, non_blocking=True)
                 else:
-                    images = data[1]
+                    target = data[1]
 
             # compute output
             output = model(images)
@@ -430,24 +450,28 @@ def validate(val_loader, model, criterion, args, is_test=False):
             batch_time.update(time.time() - end)
             end = time.time()
 
-            if (i+1) % args.print_freq == 0 or (i+1) == len(val_loader):
+            if not supress_out and ((i+1) % args.print_freq == 0 or (i+1) == len(val_loader)):
                 print('[{0}]: '.format(datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')), end='')
                 progress.display(i+1)
 
         f1 = f1_score(y_true, y_pred, average='weighted')*100.0
         bacc = balanced_accuracy_score(y_true, y_pred)*100.0
-        if is_test:
+        if is_test and not supress_out:
             print(' * TEST * Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} F1-Score {f1:.3f} B.Acc. {bacc:.3f}'
                 .format(top1=top1, 
                         top5=top5, 
                         f1=f1,
                         bacc=bacc))
-        else:
+
+        elif not supress_out:
             print(' * Validation * Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} F1-Score {f1:.3f} B.Acc. {bacc:.3f}'
                 .format(top1=top1, 
                         top5=top5, 
                         f1=f1,
                         bacc=bacc))
+
+    if get_features:
+        return {'loss': losses.avg, 'accuracy': top1.avg, 'f1-score': f1, 'b-accuracy': bacc, 'features': model.get_features()}
 
     return {'loss': losses.avg, 'accuracy': top1.avg, 'f1-score': f1, 'b-accuracy': bacc}
 

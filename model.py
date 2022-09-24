@@ -15,7 +15,7 @@ class Flatten(nn.Module):
 class Model(nn.Module):
     __constants__ = ['model_name', 'num_classes', 'num_domains']
 
-    def __init__(self, backbone, num_classes):
+    def __init__(self, backbone, num_classes, get_features=False):
         super(Model, self).__init__()
 
         if not isinstance(backbone, nn.Module):
@@ -39,21 +39,44 @@ class Model(nn.Module):
                     nn.init.zeros_(layer.bias)
 
             backbone.classifier[-1] = layer
+
+            if get_features: self.add_features_hook(backbone.classifier[-1])
+
         elif 'densenet' in self.model_name:
             feature_dim = backbone.classifier.in_features
             backbone.classifier = nn.Linear(feature_dim, num_classes)
+            if get_features: self.add_features_hook(backbone.classifier)
+
         elif any(prefix in self.model_name for prefix in ['googlenet', 'inception', 'resnet', 'shufflenet', 'resnext']):
             feature_dim = backbone.fc.in_features
             backbone.fc = nn.Linear(feature_dim, num_classes)
+            if get_features: self.add_features_hook(backbone.fc)
+
         elif 'squeezenet' in self.model_name:
             in_channels = backbone.classifier[1].in_channels
             kernel_size = backbone.classifier[1].kernel_size
             backbone.classifier[1] = nn.Conv2d(in_channels, num_classes, kernel_size=kernel_size )
+            if get_features: self.add_features_hook(backbone.classifier[1])
+
         elif 'cerranet' in self.model_name:
             feature_dim = backbone.classifier[-1].in_features
             backbone.classifier[-1] = nn.Linear(feature_dim, num_classes)
+            if get_features: self.add_features_hook(backbone.classifier[-1])
 
         self.backbone = backbone
+
+    def add_features_hook(self, layer):
+        self.features = []
+
+        def fn(model, incoming_data, output):
+            incoming_data = incoming_data.cpu().numpy()
+            self.features.append(incoming_data)
+
+        layer.register_forward_hook(fn)
+
+    def reset_features(self):
+        del self.features
+        self.features = []
 
     def extra_repr(self):
         s = ('backbone={model_name}, num_classes={num_classes}')
